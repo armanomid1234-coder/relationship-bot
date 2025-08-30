@@ -1,0 +1,101 @@
+import logging
+import os
+from datetime import datetime, timedelta
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler
+
+# Logging
+logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# In-memory storage (replace with DB later)
+user_events = {}
+
+# /start command
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    await update.message.reply_text(
+        f"👋 Hello {user.first_name}! I’ll help you remember important dates.\n"
+        "Use /adddate <name> <event> <dd-mm-yyyy> to add an event.\n"
+        "Example: /adddate Sara Birthday 21-09-2025"
+    )
+
+# /adddate command
+async def adddate(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        user_id = update.effective_user.id
+        args = context.args
+        if len(args) < 3:
+            await update.message.reply_text("❌ Usage: /adddate <name> <event> <dd-mm-yyyy>")
+            return
+
+        name, event, date_str = args[0], args[1], args[2]
+        event_date = datetime.strptime(date_str, "%d-%m-%Y")
+
+        if user_id not in user_events:
+            user_events[user_id] = []
+        user_events[user_id].append({"name": name, "event": event, "date": event_date})
+
+        await update.message.reply_text(f"✅ Saved {event} for {name} on {date_str}!")
+    except Exception as e:
+        logger.error(e)
+        await update.message.reply_text("⚠️ Error adding event. Make sure format is correct.")
+
+# /list command
+async def list_events(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id not in user_events or not user_events[user_id]:
+        await update.message.reply_text("📭 You have no saved events. Add one with /adddate.")
+        return
+
+    msg = "📅 Your Events:\n"
+    for e in user_events[user_id]:
+        msg += f"- {e['name']} | {e['event']} | {e['date'].strftime('%d-%m-%Y')}\n"
+    await update.message.reply_text(msg)
+
+# Daily reminder job
+async def send_reminders(context: ContextTypes.DEFAULT_TYPE):
+    today = datetime.now().date()
+    for user_id, events in user_events.items():
+        for e in events:
+            days_left = (e["date"].date() - today).days
+            if days_left in [7, 1]:
+                keyboard = [
+                    [InlineKeyboardButton("💬 Send Message", url="https://t.me")],
+                    [InlineKeyboardButton("🛍️ Check Shops", url="https://example.com/shops")]
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text=f"Reminder: {e['name']}'s {e['event']} is in {days_left} day(s)! 🎉",
+                    reply_markup=reply_markup
+                )
+
+# Feedback buttons
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if query.data == "like":
+        await query.edit_message_text("👍 Thanks for the feedback!")
+    elif query.data == "dislike":
+        await query.edit_message_text("👎 Sorry! We’ll improve.")
+
+# Main
+def main():
+    TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+    app = Application.builder().token(TOKEN).build()
+
+    # Commands
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("adddate", adddate))
+    app.add_handler(CommandHandler("list", list_events))
+    app.add_handler(CallbackQueryHandler(button_handler))
+
+    # Reminders daily at 9:00
+    app.job_queue.run_daily(send_reminders, time=datetime.strptime("09:00", "%H:%M").time())
+
+    print("🤖 Bot is running...")
+    app.run_polling()
+
+if __name__ == "__main__":
+    main()
